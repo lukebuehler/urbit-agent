@@ -36,7 +36,7 @@ But even better: Urbit allows us to be more ambitious than anyone else building 
 
 None of the above requires inventing much on top of what is already in Urbit. What a harness needs is well understood by now: a session log, a planner that assembles the next context window and compacts it when it fills up, tools expressed as effects, sub-agents that are simply more sessions, inputs arriving from timers, the web, chat channels and other ships, and a configuration that is data rather than code. Urbit has a convention for every one of these. The loop itself is a Gall agent. The more detailed design I leave to the people who know Arvo best.
 
-However, rwo things are genuinely missing, and both are on the runtime side.
+However, two things are genuinely missing, and both are on the runtime side.
 
 The first is data. An agent that works hard cycles through a full context window many times a day. Most of that traffic never needs to enter or exit the ship: the head only needs the information required to do the branching, and the bulk of what the model reads and writes can live as opaque blobs, referenced by hash. But the agent must _keep_ what it saw and said, and over years that adds up to tens of gigabytes per ship. This is what the upcoming 64-bit runtime and the blob store are for: a loom no longer capped at a few gigabytes, and large atoms that live on disk and enter the event log as references rather than bytes. The head stays small, the pier stays portable, and the ship stays fast. I would go further and say this is the workload that justifies landing both, and that should shape their remaining details (for instance the size at which an atom becomes a blob).
 
