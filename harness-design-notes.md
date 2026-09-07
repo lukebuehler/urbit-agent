@@ -8,7 +8,7 @@ The **head** is the session state machine: it admits input, maintains context, d
 
 The useful lesson from [Lightspeed][lightspeed] and [AgentOS][agentos] is that the head can remain small even when the agent's capabilities grow. Urbit supplies durable state and an event/effect boundary; the harness supplies session semantics and the contracts for outside work.
 
-- **Start with coding.** Real files, a shell, one faithful model API, and automatic compaction come first. A virtual filesystem, subagents, and broad Urbit integration are later capabilities.
+- **Start with coding.** Reuse established terminal and editing interfaces that coding models are already trained to use. This makes Unix tools mainly an implementation task; reliable native Urbit tool shapes require more design and evaluation. Real files, a shell, one faithful model API, and automatic compaction come first. [Tool-design guidance][coding-tools].
 - **Keep decisions deterministic.** A pure Hoon library applies events to session state and emits effect intents. A Gall agent hosts it and routes results back. Model calls and Unix execution happen outside the reducer.
 - **Retain native provider data.** Store the provider's output and continuation items intact. Extract only the fields the head needs to branch; avoid turning every API into a common text-message format.
 - **Make work identifiable.** Inputs, attempts, model turns, and external operations need stable identities. Recording an operation and receiving its result are separate events.
@@ -17,7 +17,7 @@ The useful lesson from [Lightspeed][lightspeed] and [AgentOS][agentos] is that t
 
 | Milestone | Technical commitment |
 |---|---|
-| 1 — Coding agent | Multiple independent sessions, one active task per session, Responses, native compaction, a Linux executor, core coding tools, and Harbor evaluation. |
+| 1 — Coding agent | Multiple independent sessions, one active task per session, per-session capability grants, Responses, native compaction, a Linux executor, core coding tools, and Harbor evaluation. |
 | 2 — Full agent experience | Run control and recovery, Chat Completions then Messages, subagents, promises/jobs, a native MCP client, and richer inputs. Resolve initial skills hosting here. |
 | 3 — Native development and collaboration | Clay tools and skills, harness upgrades, capability bundles, our own inter-Urbit agent protocol, and native automation. |
 
@@ -53,6 +53,12 @@ The native MCP client is a deliberate addition on the ship in milestone two: Hoo
 Keep three protocols distinct: **head to executor**, **executor to environment**, and **harness to peer harness**. They serve different purposes and can evolve independently. Neither the environment protocol nor an external agent standard should dictate the head's session model.
 
 ## 3. Sessions, context, and effects
+
+### Per-session capabilities from milestone one
+
+Follow Lightspeed's sparse `SessionConfig.features` model: the user or creating controller enables and configures tool families; an absent feature grants nothing. Environment tools, jobs, subagents, and MCP are separately configurable. Derive the session's toolset from that configuration and enforce it when dispatching calls. [Configuration contract][ls-config].
+
+Start with creation-time grants in milestone one; controlled updates can follow in milestone two. Pin their revision for each turn, including permitted targets and operations where applicable. Installing or authoring a bundle makes it available to grant, not automatically enabled for every session. A session cannot expand its own permissions merely by changing its tool catalog. Urbit development grants must identify which ships/desks it may modify, with remote work also subject to the receiving ship's permissions.
 
 ### The small milestone-one session
 
@@ -174,7 +180,7 @@ Likewise, retaining an uploaded image or document by reference does not require 
 
 ## 8. Native tools and harness self-development
 
-In milestone three, the harness becomes a developer of its own Urbit environment. Use **Hoon gates and libraries** for functions, **Gall agents** for stateful services and subscriptions, and **Clay desks** for versioned source and distribution.
+In milestone three, enable an Urbit development environment per session, targeting its own ship or an explicitly authorized ship such as a moon. Its tools cover inspection, editing, builds, tests, and activation through **Clay desks**, **Hoon gates and libraries**, and **Gall agents**. They serve the same development needs as Unix tools, with native schemas and feedback. Finding shapes models use reliably is a new design problem to evaluate on real Urbit tasks.
 
 Define a tool descriptor containing a stable name, description, input/result types, implementation entry point, required capabilities, and version. A new tool is compiled, tested, and registered before a subsequent turn can see it. Native dispatch can call a pure library function or send a typed request to a Gall agent; the descriptor should make that distinction explicit. Native tools share the ship's per-event work budget; long computations still belong outside it.
 
@@ -268,6 +274,8 @@ These notes draw primarily on the local Lightspeed and harness checkouts at the 
 [harness]: https://github.com/mopfel-winrux/urbit-agent-harness/tree/49d19cb7ba1a29b3462b38092ee03f86c316edcc
 [ls-api]: https://github.com/smartcomputer-ai/lightspeed/blob/8d23c80d165fd2912a8be5bcc786074c15c2d706/crates/api/contract/api-reference.md
 [ls-tools]: https://github.com/smartcomputer-ai/lightspeed/blob/8d23c80d165fd2912a8be5bcc786074c15c2d706/crates/tools/src/builtin/mod.rs#L318
+[coding-tools]: https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide#tools
+[ls-config]: https://github.com/smartcomputer-ai/lightspeed/blob/8d23c80d165fd2912a8be5bcc786074c15c2d706/crates/engine/src/core/components/config.rs#L13
 [ls-environments]: https://github.com/smartcomputer-ai/lightspeed/blob/8d23c80d165fd2912a8be5bcc786074c15c2d706/docs/spec/04-environments.md
 [ls-control]: https://github.com/smartcomputer-ai/lightspeed/blob/8d23c80d165fd2912a8be5bcc786074c15c2d706/docs/roadmap/p129-active-run-control.md
 [ls-subagents]: https://github.com/smartcomputer-ai/lightspeed/blob/8d23c80d165fd2912a8be5bcc786074c15c2d706/docs/roadmap/p134-subagents.md

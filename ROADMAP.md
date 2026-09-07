@@ -8,8 +8,11 @@ This roadmap turns the [proposal](README.md) into three delivery milestones, bui
 
 The first proof is an agent that takes a task, works autonomously in a real repository, and finishes it—even when the work spans several context windows.
 
+Unix tools come first because coding models are already trained to use familiar terminal and editing interfaces. Native Urbit tools need more design and experimentation. [Tool-design guidance][coding-tools].
+
 - **Implement OpenAI Responses first.** Support native coding conversations faithfully: response items, reasoning and continuation state, tool calls and results, usage, and errors. Make this API complete for the coding loop before broadening provider coverage.
 - **Provide the core coding tools.** Take Lightspeed's inventory: `list_dir`, `read_file`, `write_file`, `edit_file`, `apply_patch`, `grep`, and `glob`, plus `exec_command` and `write_stdin` for shell commands and scripts. All operate on the same real filesystem. Long commands return process handles, accept input, and yield further output; large results remain retrievable. [Tool reference][ls-tools].
+- **Configure capabilities per session.** The user or creating process explicitly enables and configures each tool family. Omitted capabilities are unavailable. Enforce grants at execution; extend the same rule to MCP, Urbit development, and later tool bundles.
 - **Bridge to a real Linux environment.** Attach a VM or container through a replaceable executor. Prefer a registered remote environment so the ship and task machine can run separately. The initial transport remains a decision: an HTTP adapter, direct reuse of Lightspeed's JSON-RPC-over-WebSocket protocol, or a local sidecar over Lick. A local first version controls only the ship's host environment. [Environment reference][ls-environments].
 - **Keep the session primitive small.** One ship supports multiple independent sessions, progressing concurrently or sequentially, with one active task per session. Each accepts a task, maintains its context, and reports completion or failure. Task completion leaves a session open and idle; explicitly closing it prevents further inputs, after which it can be deleted.
 - **Make long contexts work.** Build and maintain the active context, preserve the full history, and compact automatically using native Responses compaction. Retain the resulting continuation items and handle context overflow or compaction failure without losing the task. Exercise repeated compaction during real coding work. [Compaction reference][openai-compaction].
@@ -36,8 +39,8 @@ Build toward the feature set of a full agent harness, while keeping deep Urbit a
 
 This is where Urbit becomes the differentiator. Start with a harness that can extend itself on its own ship, then let agents on different ships collaborate and share improvements.
 
-- **Build native tools.** Read and write Clay files, author Hoon functions (gates) and libraries, and build Gall agents where tools need persistent state or subscriptions. Compile and test new tools, register their descriptions and inputs, and make them available to subsequent model turns.
-- **Maintain a native toolbox.** Support Urbit-native skills alongside tools, prompts, and session configurations. Give any supported model a discoverable inventory and the instructions needed to use it. Store and version these capabilities in Clay.
+- **Build an Urbit development toolset.** When enabled for a session, let it inspect and edit Clay, compile and test Hoon, and manage Gall agents on its own ship or a permitted target such as a moon. These tools serve the same development needs as Unix tools, but need their own schemas and feedback. Register newly authored tools for use by sessions granted access.
+- **Maintain a native toolbox.** Support Urbit-native skills alongside tools, prompts, and session configurations. Give each session a discoverable inventory of its enabled capabilities and the instructions needed to use them. Store and version these capabilities in Clay.
 - **Develop the harness with the harness.** Move from external coding agents implementing the system to the harness developing its own next version. Stage changes, test them against representative tasks, rehearse upgrades against copied session state, and demonstrate an upgrade that preserves existing sessions.
 - **Share useful improvements.** Package tools, skills, prompts, and configurations as Clay desks that another ship can install and its harness can discover. [Software distribution][urbit-dist].
 - **Connect agents across ships.** Develop our own inter-Urbit agent protocol for exchanging messages, requesting work, and returning progress and results. Design it around Urbit identities, sessions, and native capabilities, with room to evolve beyond the constraints of A2A or ACP. A2A can be layered on top as an optional compatibility adapter so external agents can communicate with Urbit agents; it does not define the protocol between ships.
@@ -49,6 +52,7 @@ This is where Urbit becomes the differentiator. Start with a harness that can ex
 [harness]: https://github.com/mopfel-winrux/urbit-agent-harness
 [lightspeed]: https://github.com/smartcomputer-ai/lightspeed
 [ls-tools]: https://github.com/smartcomputer-ai/lightspeed/blob/8d23c80d165fd2912a8be5bcc786074c15c2d706/crates/tools/src/builtin/mod.rs#L318
+[coding-tools]: https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide#tools
 [ls-environments]: https://github.com/smartcomputer-ai/lightspeed/blob/8d23c80d165fd2912a8be5bcc786074c15c2d706/docs/spec/04-environments.md#ownership-and-extension-boundary
 [openai-compaction]: https://developers.openai.com/api/docs/guides/compaction
 [tb21]: https://www.tbench.ai/news/terminal-bench-2-1
