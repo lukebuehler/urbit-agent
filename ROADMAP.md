@@ -1,8 +1,6 @@
 # An agent harness on Urbit: roadmap
 
-*Working roadmap — 7 September 2026*
-
-First, prove that a harness running on Urbit can do serious coding work. Then build out the everyday agent experience. Finally, use Urbit's native programmability and software distribution to let the harness develop itself and share improvements with other ships.
+I propose that we first prove that a harness running on Urbit can do serious coding work. Then build out the everyday agent experience. Finally, use Urbit's native programmability and software distribution to let the harness develop itself and share improvements with other ships.
 
 This roadmap turns the [proposal](README.md) into three delivery milestones, building on the [current harness][harness] and lessons from [Lightspeed][lightspeed]. The [design notes](harness-design-notes.md) provide architectural background; this document sets the implementation order. Throughout, the session loop and durable state live on the ship, while model inference and Unix tools run outside it.
 
@@ -36,16 +34,17 @@ Build toward the feature set of a full agent harness, while keeping deep Urbit a
 
 ## Milestone 3 — A harness that develops itself
 
-This is where Urbit becomes the differentiator. Start with a harness that can extend itself on its own ship, then let other ships adopt the improvements.
+This is where Urbit becomes the differentiator. Start with a harness that can extend itself on its own ship, then let agents on different ships collaborate and share improvements.
 
 - **Build native tools.** Read and write Clay files, author Hoon functions (gates) and libraries, and build Gall agents where tools need persistent state or subscriptions. Compile and test new tools, register their descriptions and inputs, and make them available to subsequent model turns.
 - **Maintain a native toolbox.** Support Urbit-native skills alongside tools, prompts, and session configurations. Give any supported model a discoverable inventory and the instructions needed to use it. Store and version these capabilities in Clay.
 - **Develop the harness with the harness.** Move from external coding agents implementing the system to the harness developing its own next version. Stage changes, test them against representative tasks, rehearse upgrades against copied session state, and demonstrate an upgrade that preserves existing sessions.
-- **Share useful improvements.** Package tools, skills, prompts, and configurations as Clay desks that another ship can install and its harness can discover. Establish this exchange of working capabilities before expanding into broader agent-to-agent coordination. [Software distribution][urbit-dist].
+- **Share useful improvements.** Package tools, skills, prompts, and configurations as Clay desks that another ship can install and its harness can discover. [Software distribution][urbit-dist].
+- **Connect agents across ships.** Develop our own inter-Urbit agent protocol for exchanging messages, requesting work, and returning progress and results. Design it around Urbit identities, sessions, and native capabilities, with room to evolve beyond the constraints of A2A or ACP. A2A can be layered on top as an optional compatibility adapter so external agents can communicate with Urbit agents; it does not define the protocol between ships.
 - **Approve incoming bundles.** Show the receiving owner what another ship's bundle adds or changes, and require explicit approval before installation and activation. Keep this initial flow simple. Broader security, isolation, and validation work follows the working end-to-end demonstration.
-- **Run from native events.** Add schedules through Behn, webhooks through Eyre, and event triggers through Gall subscriptions. Store rules and filters on the ship, routing matching events into new or existing sessions. [Urbit event systems][urbit-arvo].
+- **Run from native events.** Add schedules through Behn, webhooks through Eyre, and event triggers through Gall subscriptions. Store rules and filters on the ship, routing matching events into new or existing sessions. This make Urbit agents claw-like (e.g. OpenClaw).
 
-**Complete when:** from a plain-language request, the harness builds, tests, and uses a native tool; develops and tests an improvement to its own implementation; and shares a capability bundle. After its owner approves adoption, a second ship discovers and uses the bundle either via standard discovery or Urbit agents talking to other agents. This demonstration makes the vision tangible: an agent that improves its own capabilities and lets those improvements travel between owners.
+**Complete when:** from a plain-language request, the harness builds, tests, and uses a native tool; develops and tests an improvement to its own implementation; and shares a capability bundle. After its owner approves adoption, a second ship discovers and uses the bundle. The two harnesses exchange a task request and result through the native inter-Urbit protocol. This demonstration makes the vision tangible: agents that improve their own capabilities, share them, and work together across ships.
 
 [harness]: https://github.com/mopfel-winrux/urbit-agent-harness
 [lightspeed]: https://github.com/smartcomputer-ai/lightspeed
