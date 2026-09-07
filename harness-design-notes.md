@@ -1,148 +1,283 @@
 # Harness on Urbit: working design notes
 
-These notes accompany the proposal in [README.md](README.md). They are more technical and more opinionated than the proposal, and they reference prior work freely. They describe *one* way this could work in order to show that it can, not the way it should be built. The actual design belongs to the people who know Arvo and Vere best.
+These notes develop the [proposal](README.md) and the decisions in the [roadmap](ROADMAP.md). The roadmap sets delivery order; this document explains the architecture, contracts, and open choices behind it. The types and protocols below are design sketches, with room for the people implementing them to improve the details.
 
-Vocabulary follows the proposal: the **head** is the agent loop (the state machine that decides what goes into the next context window), the **hands** are everything that touches the world (LLM providers, sandboxes, shells, MCP servers, APIs). Where runtime internals come up, **Mars** is the serf (Nock and Arvo) and **Earth** is the king (the I/O side of Vere).
+The **head** is the session state machine: it admits input, maintains context, decides what happens next, and records outcomes. The **hands** perform model inference and interact with execution environments and external services. **Mars** refers to Arvo running in the serf; **Earth** refers to the runtime's I/O side. An external executor can run beside the ship or on another machine.
 
-## 1. The thesis, sharpened
+## 1. Design commitments and delivery order
 
-A frontier agent harness is a deterministic state machine whose only job is deciding what goes into the next context window. Everything else, LLM turns, tool calls, shells, sandboxes, web fetches, is I/O that happens elsewhere and comes back as a result.
+The useful lesson from [Lightspeed][lightspeed] and [AgentOS][agentos] is that the head can remain small even when the agent's capabilities grow. Urbit supplies durable state and an event/effect boundary; the harness supplies session semantics and the contracts for outside work.
 
-That is Arvo's shape: a pure function of the event log, effects out, results back in as events. No mainstream runtime has that shape natively. Durable workflow engines such as Temporal approximate it by replaying workflow code against a recorded history. Urbit has had it for a decade and never had a workload that needed it. An agent loop does.
+- **Start with coding.** Real files, a shell, one faithful model API, and automatic compaction come first. A virtual filesystem, subagents, and broad Urbit integration are later capabilities.
+- **Keep decisions deterministic.** A pure Hoon library applies events to session state and emits effect intents. A Gall agent hosts it and routes results back. Model calls and Unix execution happen outside the reducer.
+- **Retain native provider data.** Store the provider's output and continuation items intact. Extract only the fields the head needs to branch; avoid turning every API into a common text-message format.
+- **Make work identifiable.** Inputs, attempts, model turns, and external operations need stable identities. Recording an operation and receiving its result are separate events.
+- **Keep ordinary events small.** Use retained payload references for large bodies and bounded reads for inspection. Do not reserialize the full transcript on every turn.
+- **Let the harness evolve.** Tools, skills, prompts, configurations, and eventually the harness implementation itself are versioned software. A stable core contract supports tested upgrades; it does not make the implementation permanently fixed.
 
-Corollary for the pitch: the harness is the first application for which Urbit's complexity earns its keep. Messaging never needed a solid state interpreter; a long-lived, forkable, replayable, self-modifying agent does.
+| Milestone | Technical commitment |
+|---|---|
+| 1 — Coding agent | Multiple independent sessions, one active task per session, Responses, native compaction, a Linux executor, core coding tools, and Harbor evaluation. |
+| 2 — Full agent experience | Run control and recovery, Chat Completions then Messages, subagents, promises/jobs, a native MCP client, and richer inputs. Resolve initial skills hosting here. |
+| 3 — Native development and collaboration | Clay tools and skills, harness upgrades, capability bundles, our own inter-Urbit agent protocol, and native automation. |
 
-## 2. What survived two harness projects
+The [existing harness][harness] already prototypes features from several milestones. This is the order in which to make the complete experience work, not a claim that every component must be built from scratch.
 
-I have built this shape twice outside of Urbit: [Lightspeed](https://github.com/smartcomputer-ai/lightspeed), a Rust harness that runs agents as durable workflows on Temporal, and [AgentOS](https://github.com/smartcomputer-ai/agent-os), a deterministic, event-sourced runtime with governed self-modification. The invariants that survived both:
+## 2. Where each responsibility lives
 
-1. **An event-sourced core with no I/O.** State is a replay of the session log. The core replays, decides the next step, and emits effect *intents*. It never blocks on the outside world.
-2. **A closed event vocabulary.** Input admitted, turn planned, LLM requested and completed, tool calls observed, tool completed, compaction requested and completed, run started, idle, cancelled, config replaced. A small fixed alphabet; products change around it while the core stays still.
-3. **A thin boundary.** Intents and receipts carry references plus only the fields needed to branch: stop reason, tool call ids and names, token usage, an output reference. Provider-native payloads stay opaque and content-addressed. The transcript never crosses the seam.
-4. **Provider-native, not a universal message model.** Once a session starts, its API kind is fixed. Compaction is provider-native and a first-class core event that marks the window pending until the result lands.
-5. **Durable before dispatch.** Record the open work, then execute. Results re-enter only as admitted input. Nothing inside an executor waits on the core.
-6. **The hands are borrowed.** Frontier models are trained for a POSIX box; the head must not live on that box. Sandboxes, VMs and MCP servers are attached for exactly as long as a task needs them.
-7. **Sub-agents are just sessions.** External controllers (bots, channels, schedulers) never run inside a session; they admit events and receive emissions.
-8. **Config is data, capabilities are absent by default.** The toolset is derived from a config document; the default session can do nothing but talk.
-9. **Prompt-cache stability.** The context prefix must be byte-stable turn to turn, so anything that changes mid-context is appended with a supersede marker rather than edited in place.
-
-What AgentOS built that must *not* be rebuilt on Urbit: a durable-execution engine (Urbit is one), a custom control-plane IR (Hoon types, Clay and desks are the IR), a WASM sandbox (Nock is the sandbox), signed effect receipts (the event log is the receipt).
-
-## 3. Concept mapping
-
-| Harness concept | Outside Urbit | On Urbit |
-|---|---|---|
-| Durable log | a session log in Postgres, or a workflow history | the ship's event log; the *session log* is a noun in agent state |
-| Deterministic core | a Rust engine driven by a workflow, or a WASM reducer | a Hoon library plus a Gall agent, in userspace |
-| Effect intent and receipt | activity call, effect and receipt records | cards out; signs and pokes in; a versioned noun protocol |
-| Effect executors | workflow activities, adapters | Vere's I/O drivers (the HTTP client behind Iris), or an external process over Lick; possibly a dedicated driver later |
-| Blob offload | Postgres plus S3, blob refs in history | the blob store (vere #985) on a vere64 loom; a Hoon-level `(map hash atom)` |
-| Fork and clone | by-reference log fork, built explicitly | keep two nouns; they share structure and are durable at the end of the event (head only, see §6) |
-| Timers and schedules | Temporal Schedules, cron | Behn |
-| Web UI and webhooks | a JSON-RPC gateway | Eyre |
-| Chat channels | a channels app over managed sessions | Tlon Messenger over Ames |
-| Agent to agent | events through an admission pipeline, allowlists, hop limits | pokes between ships; identity and encryption come with the network |
-| Sub-agents | more sessions, a supervising workflow | more sessions; moons where a separate identity is wanted |
-| Secrets | an encrypted store, resolved at provider-send time | on the Earth side only, never in Arvo state (the pier and the event log are plaintext) |
-| Self-modification | typed patches, propose then shadow then approve then apply | desks, Clay builds, `+on-load` migrations; a rehearsal loop the harness has to provide (§6) |
-| Skills and catalogs | files in a virtual filesystem | desk files, readable through the scry namespace |
-| Tenancy | universes, tenants | one ship per person; moons per agent |
-| Borrowed compute | VMs from a provider, an environment daemon, jobs | sandboxes via the executor; a peer's GPU over Ames (the White Marble pattern) |
-
-## 4. One possible shape
-
-```
-                      +------------------------------ ship (Mars) ------------------------------+
-  Eyre  (web UI,      |  harness Gall agent                                                     |
-  webhooks) --------->|   +-----------------------+   intents (refs only)   +----------------+  |
-  Ames  (other ships, |   | session log (noun)    | ----------------------->| open work      |  |
-  Tlon channels) ---->|   | core state machine    |                         | (pending       |  |
-  Behn  (schedules) ->|   | turn planner          | <-----------------------|  effects)      |  |
-  Lick / Khan (CLI) ->|   | config, catalogs      |   receipts (refs +      +-------+--------+  |
-                      |   +-----------------------+    branch fields)               |           |
-                      |   payload store: (map hash atom); big atoms are blobs       |           |
-                      +----------------------------------------------------------+--+-----------+
-                                                                                 |
-                                                  Iris / Lick today; a dedicated driver later
-                                                                                 |
-                      +------------------------------ runtime (Earth) -----------v--------------+
-                      |  executor: provider clients, streaming to the UI, API keys, request   |
-                      |  assembly from refs (cache-stable), tool dispatch to sandbox / VM /   |
-                      |  MCP / web; stores payloads, hands back references                    |
-                      +-----------------------------------------------------------------------+
+```mermaid
+flowchart LR
+    client[Client] --> head
+    subgraph ship[Urbit ship]
+        head[Gall host and pure session core]
+        mcp[Native MCP client]
+        native[Clay tools and event controllers]
+        peer[Inter-Urbit agent protocol]
+        head <--> mcp
+        head <--> native
+        head <--> peer
+    end
+    head <-->|Intents and receipts| executor[External executor and payload store]
+    executor <--> model[Model API]
+    executor <--> env[Linux environment]
+    mcp <-->|HTTP transport| server[MCP server]
+    peer <-->|Gall over Ames| other[Other ships]
 ```
 
-The executor is deliberately dumb and replaceable. The protocol between the two boxes is the real artifact: a Tlon-hosted executor, a laptop sidecar, a native Vere driver and a remote GPU box are all the same thing from Mars' point of view. For a first version, plain HTTP calls through Iris are enough to prove the loop.
+The diagram shows the eventual system. Milestone one needs the client, session core, executor, model API, and Linux environment.
 
-## 5. Why vere64 and the blob store are the precondition
+The model adapter owns provider request assembly, wire formats, credentials, retries, and response decoding. The environment adapter owns filesystem and process operations. These can share one executor process initially, but their contracts are distinct.
 
-Rough numbers, to be verified. A 1M-token window cycled roughly hourly is on the order of 24M tokens a day, or about 100 MB a day *through* the window. Most of that is the re-sent, cacheable prefix. The new bytes the ship has to retain (inputs, outputs, tool results) are more like 10 to 30 MB a day for an intensely used agent. That is still several gigabytes a year, and the whole point is an agent that lives for years.
+The native MCP client is a deliberate addition on the ship in milestone two: Hoon owns the MCP protocol state and interpretation. HTTP/TLS, credential injection, and buffering can still use runtime transport support. “Provider parsing lives outside the head” should not become a rule that prevents implementing an Urbit-native protocol client.
 
-Today's 32-bit Vere has a 2 GB default loom and an 8 GB maximum. A year of memory does not fit, and `|pack`, `|meld` and snapshots all scale with loom size.
+Keep three protocols distinct: **head to executor**, **executor to environment**, and **harness to peer harness**. They serve different purposes and can evolve independently. Neither the environment protocol nor an external agent standard should dictate the head's session model.
 
-Two open runtime PRs change this:
+## 3. Sessions, context, and effects
 
-- **vere64** ([urbit/vere#970](https://github.com/urbit/vere/pull/970)). `c3_w` becomes 64-bit when built with `-Dvere64`, which lifts the loom ceiling to 2^46 bytes: functionally unlimited. The PR's benchmarks are at parity with 32-bit.
-- **Blob storage for large atoms** ([urbit/vere#985](https://github.com/urbit/vere/pull/985)). Atoms over a threshold (32 MiB in the PR) are stored as content-addressed files under `.urb/bob/` and sit on the loom as *bob atoms*, indirect atoms pointing at small metadata. Bytes are `mmap`ed only when a jet needs them; the hash and byte-level jets read from the file directly. `jam` and `cue` are unchanged (`|cram` expands blob bytes so rocks stay portable); the event log and king/serf IPC use a new `ram`/`tap` encoding that carries blob references instead of bytes. Blob lifetime is tracked by event-log refcounts and durable leases, with GC at boot and on `|chop`. Earth is the sole writer, Mars reads. Inbound HTTP bodies, Clay syncs and Mesa frames over the threshold go straight to the store. Listed as future work in the PR: a `%blob` Nock hint, automatic blobification after each event, and a blobify sweep in `|pack`.
+### The small milestone-one session
 
-Together they make "keep the agent's entire provider-native history on-ship" viable: payloads enter as references, the event log and the loom stay small, the pier stays portable. The harness is a concrete consumer that justifies landing both.
+A session holds identity, lifecycle, API kind, model configuration, an environment reference, history, the active context revision, and outstanding operations. Each task has an attempt ID and a terminal result. That small attempt record can become the richer run model in milestone two.
 
-Two details worth raising with the runtime work:
+Task completion leaves an **open, idle** session. Closing an idle session makes input admission terminally unavailable; deletion is a separate operation allowed only after closure. Milestone one accepts one task and works until completion or failure. Conversational continuations, steering, queues, and force-close/cancellation controls come later. This follows [Lightspeed's lifecycle contract][ls-api] without importing its whole control surface at once.
 
-1. The 32 MiB threshold is far above typical LLM payloads (kilobytes to a few megabytes). This workload wants a lower threshold, the `%blob` hint, or the post-event detector; otherwise transcripts stay loom-resident, which is tolerable on vere64 but makes snapshots and `|pack` heavier than they need to be.
-2. The PR makes the HTTP, Unix and Mesa drivers blob-aware. Lick is not mentioned. If an early version uses an external executor over Lick, results over the threshold should land as blobs on that path too.
+Several sessions can have model requests or commands in flight simultaneously. Their state transitions still run as individual ship events, so each event must do bounded work. Maintain derived state incrementally and use replay to verify it, rather than folding the entire history for each transition. Session concurrency does not imply parallel execution of Hoon within one event.
 
-## 6. Design directions I would argue for
+Keep the durable history separate from the active model context. Compaction changes which retained items the model sees; it does not erase the history or reset task accounting. Expose session status, terminal reasons, and bounded history reads through scries and a thin client interface.
 
-1. **Userspace first.** A Hoon library plus a Gall agent, not a vane. Upgradable through desks, no kernel changes, ships faster. Whether any of it should ever move into the kernel is a later question.
-2. **The effect protocol is the product.** Versioned nouns for "generate a turn", "compact", "count tokens", "execute a tool" (sandbox, environment, MCP, web), "store and fetch a payload". Receipts carry status, references and the few branch fields. Timers are Behn's job already.
-3. **Earth parses, Mars branches.** Provider protocol knowledge (JSON, server-sent events, retries, cache breakpoints) lives on the runtime side, exactly as TLS, HTTP framing and Ames cryptography already do. Nock is slow at text and every event is a blocking transaction for the whole ship, so per-event work must stay small. Mars receives pre-digested nouns.
-4. **References, not bytes, cross the seam.** The executor assembles the provider request from references so the prefix stays byte-identical turn to turn (prompt caching). Mars never re-sends the transcript.
-5. **The session log is a legible noun, exposed through the scry namespace.** Any front-end (Tlon, a terminal, a Context-Lens-style inspector) renders from the namespace rather than from a private API.
-6. **Forking is a head-only property.** A session's state is one noun; keeping two of them shares everything up to the fork, and both are durable when the event completes, with no serialization step. That is a genuine advantage over harnesses that keep sessions in a database. It does not extend to the hands: a sandbox mid-task is not part of the noun. Rehearsing a change on a fork also needs a rule for effects issued from the fork (stub them, or run them and pay).
-7. **The core loop stays fixed; self-modification targets desks.** Tools, skills, prompts, policies and config are files. The rehearsal loop (write to a staging desk, build it, run a copy of the session against it, approve, commit) is something the harness has to provide: Clay can build code from any desk on demand and Gall reloads agents on commit with `+on-load` for state migration, but running a *new* version of the loop against a *copy* of state requires the core to be a pure library the agent can call with either version. What Arvo gives for free is the other half: an event that crashes leaves no trace.
-8. **Keys never enter Arvo.** API keys and OAuth tokens live on the Earth side and are resolved at send time. The event log must never contain a secret.
-9. **Streaming bypasses the log.** Tokens stream from the executor to the UI; only terminal results become events. Partial frames as events would bloat the log for no gain.
-10. **Capabilities are absent by default.** A session is a model that can process turns; every tool family is an explicit grant in config.
+### The effect boundary
 
-## 7. Where the ecosystem already is (August 2026)
+A useful initial envelope is:
 
-- **Tlonbot** ([tlon.io/posts/tlonbot](https://tlon.io/posts/tlonbot)). Every Tlon Messenger account gets an OpenClaw-powered agent on a moon, run as "a sidecar service alongside your hosted Tlon planet that bridges to your agent's OpenClaw instance". Memory, keys and relationships are on Tlon's servers for now; the stated direction is user-controlled infrastructure. The head is outside Urbit; Urbit provides identity and a channel. The proposal inverts this: the head moves onto the ship and the sidecar becomes a replaceable executor, which is the path to what Tlon already says it wants.
-- **"LLMs on Urbit"** ([urbit.org/blog/llms-on-urbit](https://urbit.org/blog/llms-on-urbit), Groundwire, January 2026). An experimental desk with a Claude chat interface and conversation branching, an MCP server exposing ship tools, an async wrapper for agents, alarms and open loops, and the principle that "state should be legible and portable as conventional files and directories". An on-ship agent loop exists and validates the direction. It is an application rather than a kernel-grade harness with a runtime seam and payload offloading; its legibility principle is worth adopting.
-- **White Marble** ([urbit.org/blog/building-white-marble](https://urbit.org/blog/building-white-marble)). `%privateer` for membership and data, `%computeer` gating an inference engine, connected over Ames: a ship points at a provider's Urbit identity instead of a public endpoint. Directly reusable as borrowed compute over Ames.
-- **~sicdev-pilnup** ([contributor spotlight](https://urbit.org/blog/contributor-spotlight-sicdev-pilnup)): Urbit as "the identity and memory layer for AI systems, not their compute substrate", and "nearly a perfect substrate for an independent agent". The same thesis, in a community voice.
-- **Tlon, July 2026** ([This Month in Urbit](https://urbit.org/blog/this-month-in-urbit-july-2026)). Notebooks redesigned as Markdown for "AI agent compatibility"; Context Lens shows an agent's tool uses and provider details. Tlon is already reshaping content and UI for agents.
-- **Urbit skills alpha, Yamoon, Lua-Hoon, nockasm** ([June 2026](https://urbit.org/blog/this-month-in-urbit-june-2026)). Agents can write Hoon, or compile to it. This matters for self-authored tools.
-- **Directed Messaging** (408k, July 2026). Content-centric, scry-based networking: the shape of "an agent requests named data from a peer".
+```text
+Intent  = version, session-id, task-id, operation-id, kind,
+          context/config revision, target-id, input-reference
+Receipt = version, operation-id, status, output-reference,
+          usage/error metadata, process-handle or tool-call descriptors
+```
 
-Nobody has built the head as a kernel-grade component with the event-sourced, thin-effect, offloaded-payload discipline, and nobody has tied it to the runtime work that makes multi-year memory feasible. That is the gap.
+Names are illustrative. The important rule is to record the operation and its frozen inputs before dispatch. A receipt is admitted only against the matching pending operation. Duplicate or late receipts cannot settle another task or rerun completed siblings in a tool batch. Replay reconstructs decisions without replaying external commands.
 
-## 8. Risks and open questions
+Milestone one needs this correlation and honest failure reporting. Milestone two adds full reconciliation after reconnects and restarts: query retained operation status, recover completed results, and distinguish unknown outcomes from known failures. A lost shell reply does not establish that the command never ran; only retry execution when its outcome and retry contract allow it.
 
-- **Nock and text.** JSON and string processing in Hoon is slow. Mitigation is §6.3, plus a per-event compute budget.
-- **One ship, one thread.** A heavy event blocks everything, Messenger included. Bound per-event work; large results arrive as references.
-- **Iris in practice.** Timeouts, large bodies and streaming behaviour of the HTTP client vane and its driver need checking for this workload; this is the likely reason to move to an external executor or a dedicated driver after the first version.
-- **Event-log growth and `|chop`.** Deleting a session must drop its blob references so GC can reclaim them; `|chop` semantics with very long-lived sessions need thought.
-- **Blob threshold** (§5).
-- **Hosted memory footprint** of vere64 looms; blobs and `mmap` help, but it needs measuring.
-- **Sequencing.** Both runtime PRs are open. The proposal should give the core team a concrete reason to land them, not another abstract wish.
-- **Product gap.** A harness is not a consumer product. The Foundation and core team ship the head and the runtime work; Tlon ships the surface and migrates Tlonbot onto it over time; the community ships tools and skills as desks.
+Arvo's persistence preserves the head. It does not by itself preserve an external process or guarantee exactly-once effects. Keep receipts and process ownership explicit, and fail visibly while preserving saved data if an upgrade cannot read a state version.
 
-## 9. Phasing (sketch)
+## 4. Native model APIs and compaction
 
-- **Phase 0: protocol and prototype.** Specify the session log and the effect protocol as nouns. A Gall agent, LLM calls through Iris, a terminal to talk to it. Long-lived sessions, forking and compaction are the things to prove. Runs on today's 32-bit Vere with short sessions.
-- **Phase 1: durable memory.** vere64 and the blob store land; payloads arrive as blobs; threshold or hint tuned for this workload. Sessions that live for months. Tlon Messenger as a channel; an inspector that reads the scry namespace.
-- **Phase 2: hands and society.** An external executor (sandboxes, MCP), sub-agents, schedules and webhooks, agent-to-agent over Ames, skills desks, and the governed self-modification loop.
-- **Phase 3: native.** A dedicated Vere driver if warranted, hosting economics, a marketplace of tools and skills desks, Tlonbot fully on-ship.
+### Responses first
 
-## References
+Implement the OpenAI Responses coding path faithfully before adding another API. Retain ordered output items, tool-call identities, native reasoning/continuation data, stop conditions, usage, and errors. The adapter renders valid next-request items from that retained data. Opaque reasoning is continuation state, not text for the harness to interpret. [Reasoning reference][openai-reasoning].
 
-- Lightspeed: [github.com/smartcomputer-ai/lightspeed](https://github.com/smartcomputer-ai/lightspeed)
-- AgentOS: [github.com/smartcomputer-ai/agent-os](https://github.com/smartcomputer-ai/agent-os)
-- vere64: [urbit/vere#970](https://github.com/urbit/vere/pull/970)
-- Blob storage for large atoms: [urbit/vere#985](https://github.com/urbit/vere/pull/985)
-- OpenAI on separating harness from compute: [The next evolution of the Agents SDK](https://openai.com/index/the-next-evolution-of-the-agents-sdk/)
-- Anthropic on decoupling the brain from the hands: [Scaling Managed Agents](https://www.anthropic.com/engineering/managed-agents)
-- Tlonbot: [tlon.io/posts/tlonbot](https://tlon.io/posts/tlonbot)
-- LLMs on Urbit: [urbit.org/blog/llms-on-urbit](https://urbit.org/blog/llms-on-urbit)
-- Building White Marble: [urbit.org/blog/building-white-marble](https://urbit.org/blog/building-white-marble)
+Prefer a design that can reconstruct requests from retained native items, rather than depending exclusively on provider-hosted conversation state. Fix the API kind within a session initially. Switching APIs should create a new session or use an explicit context-conversion operation; it must not silently reinterpret an existing transcript.
+
+“Complete Responses support” means the requirements of the coding loop work end to end. It does not bring every optional hosted tool, media type, or interactive client feature into milestone one.
+
+### Compaction is a state transition
+
+OpenAI supports automatic server-side compaction and an explicit `/responses/compact` endpoint. The explicit endpoint fits an initial head-controlled transition: freeze a context revision, request compaction before it exceeds capacity, then commit the returned window. Preserve the entire returned window, including retained items and the opaque compaction item. Server-side compaction needs its own adapter handling for compaction items returned during generation. [Compaction reference][openai-compaction].
+
+Track requested, pending, committed, and failed compaction. Leave room for generation and tool results. A failed compaction retains the prior context; a stale result cannot replace a newer revision. Keep instructions, task constraints, and unresolved work available after the transition, and exercise repeated compaction on a long task. In milestone two, inputs arriving during compaction wait for the next valid context boundary.
+
+### Broader APIs and model-specific tools
+
+Add **OpenAI Chat Completions, then Anthropic Messages**, in milestone two. Keep each API's native items and reasoning conventions; put compaction and caching policy in the relevant adapter. Where native compaction is unavailable, use an explicit summarization policy rather than presenting it as equivalent provider behavior.
+
+Separate tool implementation from model-facing presentation. The same process capability can be exposed as `exec_command`/`write_stdin` or a Claude-style `Bash` surface. Editing tools need model-appropriate schemas, instructions, and result formatting too. Pin the advertised toolset and its implementation revision for each turn. Preserve stable request prefixes between deliberate context changes, while allowing necessary instruction and catalog updates. [Lightspeed tool surfaces][ls-tools].
+
+Images, documents, and web tools follow in milestone two. Retain original assets and their metadata, then render content in the selected provider's supported form. User-visible token streaming can follow the core controls; transient token frames need not become individual session-history entries.
+
+## 5. The environment bridge and coding tools
+
+A task needs a real Linux filesystem, shell, processes, development tools, and permitted network access. A workspace VFS or an on-ship JavaScript runtime does not replace that environment.
+
+Prefer remote attachment so the ship and task machine can live separately. Lightspeed distinguishes providers that manage environments from daemons that expose an environment's operations. Its registered daemons connect outward to a gateway; its environment data protocol uses JSON-RPC over WebSocket. Reusing it directly is different from exposing a simple HTTP endpoint. [Environment design][ls-environments].
+
+| Initial option | Consequence |
+|---|---|
+| HTTP adapter reached through Iris | A small bridge translates requests to the environment protocol and exposes status/results. Suitable for a remote provider; the adapter still has to be built. |
+| Reuse Lightspeed's WebSocket protocol | Reuse its operation contracts and daemon, with a compatible bridge/runtime transport. Do not assume Iris supplies this unchanged. |
+| Local sidecar over Lick | A local IPC bootstrap controlling the ship's host environment. Keep environment identity explicit so remote attachment can follow. |
+
+Choose one before implementation. One attached existing environment is sufficient; provisioning fleets, automatic migration, and a provider marketplace are later work. A session references an environment by identity. Closing or forking a session must not implicitly destroy or copy a shared environment.
+
+The minimum tool inventory is:
+
+| Capability | Model-facing tools and behavior |
+|---|---|
+| Inspect | `list_dir`, `read_file`, `grep`, `glob`; bounded results and useful path/encoding errors. |
+| Change files | `write_file`, `edit_file`, `apply_patch`; clear failed-match and patch errors. |
+| Run commands and scripts | `exec_command`; working directory, environment, stdout/stderr, exit status, and interactive/PTY support. |
+| Continue a process | `write_stdin`; later output, stdin, interruption, termination, and terminal status. |
+
+All tools address the same filesystem. Git, compilers, package managers, and tests can run through the shell. Validate returned tool names and arguments against the granted toolset at dispatch; advertising a smaller schema list alone does not enforce it.
+
+Separate a short **yield interval** from a **kill deadline**. A build that outlives the first response returns a process handle and continues. Bind handles to their originating environment, retain output behind cursors/references, and return bounded previews. These process primitives belong in milestone one; the broader jobs system follows in milestone two.
+
+## 6. Run control, subagents, and efficient waiting
+
+Milestone two expands the attempt model into explicit runs, with queued, active, waiting, cancelling, and terminal states. Keep admission IDs so client retries do not duplicate work.
+
+- **Continue** starts another run in an open session.
+- **Steer** admits input for the next turn boundary without changing the in-flight request. Unconsumed steering must still receive a turn even if the current response would otherwise finish.
+- **Queue** admits a later run and exposes it as queued immediately.
+- **Cancel** stops new dispatches, requests cancellation of outstanding work, and records the outcome. It does not remove earlier events.
+- **Fork** copies history/context at a settled boundary and records lineage. Select a fresh, explicitly shared, or separately snapshotted environment; copying session state does not copy Linux processes or undo their effects.
+
+These semantics are worked through in [Lightspeed's active-run design][ls-control].
+
+Use one promise abstraction for asynchronous producers: environment jobs, child sessions, and eventually peer requests. A promise has an owner, producer identity, status, result reference, and optional deadline. `await` can wait for any or all of a set. A wait timeout releases the waiter; cancellation is a separate operation on the producer.
+
+Lightspeed's `agent_run` joins a child result directly, while `agent_spawn` returns a promise for later `await`. Adapt that pattern using ordinary Urbit sessions with separate context, inherited or explicit configuration, lineage, and limits. Owned children normally terminate with their parent work; intentional detachment requires an explicit lifetime rule. [Subagent design][ls-subagents].
+
+Background jobs let an environment run longer scripts or groups of operations and retain results near the work. Submit once, then receive completion as an event or await a promise. The model should not spend turns polling for liveness. Waiting suspends session work; Behn supplies deadlines, and transport adapters can perform any required status polling without invoking the model.
+
+Keep usage, elapsed-time limits, and retry budgets outside compactable context. A failed command or test is normally information the model can use, not a reason to halt after an arbitrary small number of errors.
+
+## 7. A native MCP client and the first skills model
+
+### MCP belongs on the ship
+
+Implement the MCP client as a Hoon component with Gall integration. It owns protocol version handling, request correlation, discovery, tool schemas and invocation, and result/error interpretation. Support resources and prompts where exposed; advertise only client capabilities that are implemented. Integrate calls into the same pending-effect and tool-result machinery as other tools.
+
+Pin the first supported revision instead of targeting an unspecified “latest.” The **2026-07-28 Streamable HTTP** revision uses POST requests with required metadata and version headers. Responses can be JSON or request-scoped SSE; the client must accept both. It removes protocol-level sessions and the separate GET stream. Cancellation of an SSE request is signalled by closing that response stream. Omitting the obsolete HTTP+SSE transport does not eliminate SSE decoding. [Transport specification][mcp-transport].
+
+Start with unauthenticated endpoints and configured API keys/static tokens. OAuth flows, legacy transport compatibility, and hosting an MCP server are deferred. A transport shim may handle TLS, bytes, buffering, and secret injection; MCP semantics remain in Hoon. Verify bounded chunk delivery and parsing with Iris/runtime support before committing to a particular transport implementation.
+
+Keep configured secrets outside Arvo. The ship can hold an opaque credential binding while the transport resolves it at send time. Ordinary Hoon-built authorization headers would put the secret into ship state, so this separation requires explicit transport support; it is not provided merely by saying “use Iris.”
+
+### Skills and media are separate from a VFS
+
+A skill is discoverable instructions and supporting resources; it is not necessarily an executable tool. Load concise catalog metadata into context, fetch bodies on demand, and record the revision that was activated.
+
+Milestone two leaves the initial storage choice open: files in the attached Unix environment are close to the coding workspace; on-ship storage survives environment replacement and leads toward native bundles. Define skill identity, revision, and resource lookup independently of location. Neither choice requires a custom VFS. Milestone three commits to Clay-backed native skills and explicit import/export of reusable bundles.
+
+Likewise, retaining an uploaded image or document by reference does not require implementing a general workspace filesystem. Keep workspace files, skill packages, and immutable transcript/artifact storage as distinct concerns.
+
+## 8. Native tools and harness self-development
+
+In milestone three, the harness becomes a developer of its own Urbit environment. Use **Hoon gates and libraries** for functions, **Gall agents** for stateful services and subscriptions, and **Clay desks** for versioned source and distribution.
+
+Define a tool descriptor containing a stable name, description, input/result types, implementation entry point, required capabilities, and version. A new tool is compiled, tested, and registered before a subsequent turn can see it. Native dispatch can call a pure library function or send a typed request to a Gall agent; the descriptor should make that distinction explicit. Native tools share the ship's per-event work budget; long computations still belong outside it.
+
+A toolbox combines those descriptors with skills, prompts, and reusable session configurations. Pin implementations while calls are outstanding; publishing an update must not silently change the meaning of a call already admitted by the model.
+
+The self-development loop is concrete:
+
+1. Write a candidate tool, skill, or harness change to a staging desk/revision.
+2. Compile it and run focused tests.
+3. Rehearse behavior against copied session state and representative tasks, with external effects stubbed or directed to a disposable environment.
+4. Activate the tested version and record its identity and any state migration.
+
+For harness upgrades, test the new pure session library as well as the Gall host's migration. Gall passes the old saved state to the rebuilt agent through `+on-load`; the harness must supply a valid migration and reject unsupported state without replacing it with empty state. A failed upgrade event can abort the commit, but this does not roll back outside work performed during earlier rehearsal events. [Gall upgrades][urbit-gall].
+
+Package reusable capabilities as desks, with metadata for versions, dependencies, model-facing instructions, and tool registrations. Keep local customizations separate from upstream updates. Clay supplies software distribution; the harness still needs a bundle manifest and activation convention. [Desk distribution][urbit-dist].
+
+For bundles received from another ship, show the owner the additions and changes and require approval before installation and activation. Keep this first approval flow simple. Broader isolation and validation work follows the end-to-end demonstration; it should not displace building the system that the demonstration proves.
+
+## 9. Our own inter-Urbit agent protocol
+
+Agent communication is a milestone-three capability in its own right, alongside sharing code. Build an application protocol around Urbit identities, durable sessions, asynchronous work, and native capabilities. **Do not adopt A2A or ACP as the contract between ships.** An A2A adapter can later expose compatible operations to outside agents while the native protocol evolves independently.
+
+Use versioned nouns and marks carried by Gall interactions over Ames. Gall provides the route to the peer; the harness defines what a message means and how it enters a session. [Urbit communications][urbit-arvo]. The prototype already has a small typed `%ask`/`%answer` exchange under `%harness-a2a-0`; that is useful starting code, not adoption of an external standard. [Existing peer types][h-peer-types].
+
+A proposed first envelope carries a protocol version, sending and receiving harness identities, request/conversation IDs, a message kind, and a typed body. Derive the sending ship from the Gall interaction rather than trusting a ship name inside the body. Local session IDs need not become globally meaningful: each side records how the exchange maps to its own work.
+
+| Message family | Purpose |
+|---|---|
+| Capabilities | Describe supported protocol versions, callable capabilities, and available bundle metadata. |
+| Message | Deliver conversational input to an agreed peer conversation. |
+| Request / accept / reject | Ask for work and learn whether the peer admitted it. Acceptance is distinct from completing it. |
+| Progress / result | Associate updates and a terminal outcome with the original request. Results can include retrievable artifacts. |
+| Status / cancel | Reconcile outstanding requests and ask the peer to stop work. Cancellation has an acknowledged outcome. |
+
+The initial wire specification should settle these semantics:
+
+- **Admission and identity.** Identify a request by its peer, harness, and request ID. Record admission before starting work; a duplicate gets the recorded status/result rather than starting a second run. Use a simple owner-configured peer policy to decide which incoming work to accept.
+- **Ownership and waiting.** The receiving harness owns its session and execution. The sender holds a promise for the result. A timeout or lost connection is not proof the peer stopped; reconnects query status, and cancellation is an explicit request.
+- **Results and artifacts.** Define terminal outcomes, progress ordering, and result retention. An artifact reference needs an origin, identity/version, and retrieval path; a hash or filesystem path from another ship is not sufficient on its own.
+- **Evolution.** Version the envelope and payload types, advertise supported capabilities, and reject unsupported operations explicitly. Keep task exchange separate from installing bundles: discovering a capability must not silently install its code.
+
+Start with messaging and request/result exchange between two harnesses. Reuse milestone-two promises and admission rules. Leave broad discovery markets, negotiation, and richer collaboration patterns until these basics work.
+
+An external A2A adapter maps supported external messages to this native contract, maintains correlation, and reports unsupported features honestly. Native operations remain available even when they have no external equivalent. The native protocol therefore owns the model; interoperability is a boundary layer.
+
+## 10. Native automation
+
+Schedules, webhooks, and subscriptions should be on-ship controllers that admit input into sessions. They do not each need their own agent loop.
+
+Use Behn for timed wakeups, Eyre for incoming HTTP events, and Gall subscriptions for application events. Store trigger definitions, filters, target agent configuration, and routing policy in durable state. A matching event can create a session or queue input into an existing one; an occurrence ID prevents retried delivery from creating duplicate work. [Arvo services][urbit-arvo].
+
+Define missed-schedule and overlap behavior: skip or catch up, start a new session or queue behind existing work. This supplies the persistent bot experience while keeping execution in the same session machinery used by a terminal user or another ship.
+
+## 11. Payload storage and runtime work
+
+A real filesystem, a skill catalog, and a retained payload store solve different problems. Defer the VFS, but establish payload references in milestone one. Store immutable model output, tool logs, and artifacts with stable identities and retain the receipts required to reconstruct sessions. Requests resolve those references close to the executor, avoiding repeated transfer of an entire transcript through the ship.
+
+A simple external backing store is enough for the first benchmark. Its contents must be included in backup/restore alongside the pier; moving the pier alone is insufficient while required history lives elsewhere. Deleting a session releases its live references, but reclamation must also account for forks, outstanding work, retained history, and backups.
+
+Native storage is the longer-term route to portable, long-lived sessions. **As checked on 7 September 2026, vere64 merged into `develop` on 2 September; the blob-storage PR remains open.** The latter proposes disk-backed, content-addressed large atoms represented by small loom metadata. Its documented 32 MiB threshold is above many individual model responses, so payload sizing and offload triggers still matter. [vere64][vere64], [blob storage][blobs].
+
+Measure event size, loom growth, payload throughput, and restore/replay cost on actual agent workloads. Check blob handling on the chosen transport, including Lick if used. Runtime availability and integration are separate from the first coding capability gate; a dedicated driver should follow measured transport needs.
+
+## 12. Evidence and remaining decisions
+
+### Prove the milestones through the ordinary execution path
+
+For milestone one, run the ship inside a VM and implement a Harbor adapter that connects its sessions to Harbor's task environments. The adapter submits the original task instruction, observes completion, and exports trajectories; the agent uses its normal tools, and Harbor owns verification. The sibling `ls-benchmark` implementation demonstrates this separation with an environment daemon inside the task sandbox. [Harbor agent interface][harbor].
+
+Pin Terminal-Bench 2.1, task images, model snapshot, reasoning settings, resources, timeouts, and attempt count. Use the roadmap's Codex comparison as the capability target, measured under matched conditions. Declare the score threshold and comparison margin before the campaign. The roadmap's approximate score is a planning reference, not a verified result for this harness. Report failures and the denominator as well as successful tasks. Add a controlled long-context task if the benchmark campaign does not exercise repeated compaction.
+
+For milestone two, exercise the races the controls introduce: steering during a final answer, cancellation with pending tools, input during compaction, reconnects with a lost receipt, and parent termination with active children. Replay and migration checks should preserve the same recorded outcomes.
+
+For milestone three, demonstrate native tool creation, a tested harness upgrade, approved bundle adoption by a second ship, and a task/result exchange through the native protocol. Exercise a schedule or webhook through the same session admission path.
+
+### Decisions to settle as implementation approaches
+
+| Decision | Current direction |
+|---|---|
+| First environment transport | Remote attachment preferred; choose HTTP adapter, Lightspeed WebSocket reuse, or a local Lick bootstrap. |
+| Initial compaction mode | Explicit native compaction fits the head's revision boundary; automatic server-side mode is another supported path to evaluate. |
+| Skills in milestone two | Choose on-ship or environment storage behind an explicit locator/revision contract. Clay-native bundles arrive in milestone three. |
+| Native MCP transport | Prove chunk delivery, bounded parsing, and secret injection while keeping protocol ownership in Hoon. |
+| Inter-Urbit wire schema | Specify admission, task/results, cancellation, retention, and versioning through a two-ship implementation. |
+| Production hardening | Expand isolation, validation, storage operations, and deployment support after the complete demonstration. |
+
+These notes draw primarily on the local Lightspeed and harness checkouts at the revisions linked below. Related Urbit work remains useful context: [Tlonbot](https://tlon.io/posts/tlonbot), [LLMs on Urbit](https://urbit.org/blog/llms-on-urbit), and [White Marble](https://urbit.org/blog/building-white-marble).
+
+[lightspeed]: https://github.com/smartcomputer-ai/lightspeed/tree/8d23c80d165fd2912a8be5bcc786074c15c2d706
+[agentos]: https://github.com/smartcomputer-ai/agent-os
+[harness]: https://github.com/mopfel-winrux/urbit-agent-harness/tree/49d19cb7ba1a29b3462b38092ee03f86c316edcc
+[ls-api]: https://github.com/smartcomputer-ai/lightspeed/blob/8d23c80d165fd2912a8be5bcc786074c15c2d706/crates/api/contract/api-reference.md
+[ls-tools]: https://github.com/smartcomputer-ai/lightspeed/blob/8d23c80d165fd2912a8be5bcc786074c15c2d706/crates/tools/src/builtin/mod.rs#L318
+[ls-environments]: https://github.com/smartcomputer-ai/lightspeed/blob/8d23c80d165fd2912a8be5bcc786074c15c2d706/docs/spec/04-environments.md
+[ls-control]: https://github.com/smartcomputer-ai/lightspeed/blob/8d23c80d165fd2912a8be5bcc786074c15c2d706/docs/roadmap/p129-active-run-control.md
+[ls-subagents]: https://github.com/smartcomputer-ai/lightspeed/blob/8d23c80d165fd2912a8be5bcc786074c15c2d706/docs/roadmap/p134-subagents.md
+[openai-reasoning]: https://developers.openai.com/api/docs/guides/reasoning
+[openai-compaction]: https://developers.openai.com/api/docs/guides/compaction
+[mcp-transport]: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+[urbit-gall]: https://docs.urbit.org/build-on-urbit/core-academy/ca11
+[urbit-dist]: https://docs.urbit.org/build-on-urbit/userspace/dist
+[urbit-arvo]: https://docs.urbit.org/build-on-urbit/app-school/1-arvo
+[h-peer-types]: https://github.com/mopfel-winrux/urbit-agent-harness/blob/49d19cb7ba1a29b3462b38092ee03f86c316edcc/desk/sur/harness.hoon#L38
+[vere64]: https://github.com/urbit/vere/pull/970
+[blobs]: https://github.com/urbit/vere/pull/985
+[harbor]: https://www.harborframework.com/docs/agents
