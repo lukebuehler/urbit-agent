@@ -50,6 +50,8 @@ This is not a detour from where the ecosystem is already heading. Tlonbot alread
 
 ## How we start
 
+The [harness roadmap](harness-roadmap.md) sets out three milestones, from a capable coding agent to a harness that develops itself and shares improvements with other ships.
+
 I do not want to prescribe an architecture. I want us to agree on the destination and take the first steps.
 
 - Treat the 64-bit runtime and the blob store as the enabling work for this use-case, and let it drive their priorities.
