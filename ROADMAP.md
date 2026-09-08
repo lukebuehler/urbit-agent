@@ -2,7 +2,7 @@
 
 I propose that we first prove that a harness running on Urbit can do serious coding work. Then build out the everyday agent experience. Finally, use Urbit's native programmability and software distribution to let the harness develop itself and share improvements with other ships.
 
-This roadmap turns the [proposal](README.md) into three delivery milestones, building on the [current harness][harness] and lessons from [Lightspeed][lightspeed]. The [design notes](harness-design-notes.md) provide architectural background; this document sets the implementation order. Throughout, the session loop and durable state live on the ship, while model inference and Unix tools run outside it.
+This roadmap turns the [proposal](README.md) into three delivery milestones, building on the [current harness experiment][harness] and lessons from [Lightspeed][lightspeed] (an enterprise version I've built, which has validated many of the ideas here). The [design notes](harness-design-notes.md) provide architectural background; this document sets the implementation order.
 
 ## Milestone 1 — A capable coding agent
 
