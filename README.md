@@ -38,7 +38,7 @@ This is not a detour from where the ecosystem is already heading. Tlonbot alread
 
 ## What it takes: a proposed roadmap
 
-If we want people to use a Urbit-native agent, it needs to match the core features of current frontier-level harnesses, such as Clude Code, Codex, or OpenClaw. This starts with expectation that it can interact with a Unix enviornment, act as a MCP client, handle different LLM provider protocols, and so on. Only once these things are guarnteed and verified to work, I would foucs on turning inward and unleashing the agent on Urbit itself. Hence, I propose the following roadmap.
+If we want people to use a Urbit-native agent, it needs to match the core features of current frontier-level harnesses, such as Clude Code, Codex, or OpenClaw. This starts with expectation that it can interact with a Unix enviornment, act as a MCP client, handle different LLM provider protocols, and so on. Only once these things are guarnteed and verified to work, I would foucs on turning inward and unleashing the agent on Urbit itself. This approach allows us to start with the most straightforward and broadly validated features first and then move into speculative and experimental territory. Hence, I propose the following roadmap.
 
 The first step is a capable coding agent: a Gall-hosted loop with independent sessions and a bridge to a real Linux environment. Start with OpenAI Responses and established Unix tool-sets to read, edit, and run code, then prove that capability on Terminal-Bench 2.1. Unix tools come first because models are already trained to use them and we can follow standard implementation paractices; native Urbit tools will need more design and experimentation. The Urbit/Unix split also really tests the head-and-hands thesis.
 
