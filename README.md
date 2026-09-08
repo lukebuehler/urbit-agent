@@ -34,29 +34,18 @@ But even better: Urbit allows us to be more ambitious than anyone else building 
 
 ## What it takes
 
-None of the above requires inventing much on top of what is already in Urbit. What a harness needs is well understood by now: a session log, a planner that assembles the next context window and compacts it when it fills up, tools expressed as effects, sub-agents that are simply more sessions, inputs arriving from timers, the web, chat channels and other ships, and a configuration that is data rather than code. Urbit has a convention for every one of these. The loop itself is a Gall agent. The more detailed design I leave to the people who know Arvo best.
+The first step is a capable coding agent: a Gall-hosted loop with independent sessions and a bridge to a real Linux environment. Start with OpenAI Responses and established Unix tool-sets to read, edit, and run code, then prove that capability on Terminal-Bench 2.1. Unix tools come first because models are already trained to use them and we can follow standard implementation paractices; native Urbit tools will need more design and experimentation. The Urbit/Unix split also really tests the head-and-hands thesis.
 
-However, two things are genuinely missing, and both are on the runtime side.
+Then build out the full agent experience: conversational continuations, steering and cancellation, more model APIs, subagents, efficient background work, and an Urbit-native MCP client. These make the harness useful for sustained everyday work and connect it to existing tools and services.
 
-The first is data. An agent that works hard cycles through a full context window many times a day. Most of that traffic never needs to enter or exit the ship: the head only needs the information required to do the branching, and the bulk of what the model reads and writes can live as opaque blobs, referenced by hash. But the agent must _keep_ what it saw and said, and over years that adds up to tens of gigabytes per ship. This is what the upcoming 64-bit runtime and the blob store are for: a loom no longer capped at a few gigabytes, and large atoms that live on disk and enter the event log as references rather than bytes. The head stays small, the pier stays portable, and the ship stays fast. I would go further and say this is the workload that justifies landing both, and that should shape their remaining details (for instance the size at which an atom becomes a blob).
+The next step is a native Urbit development environment. Give a session tools to inspect, edit, test, and upgrade its own ship, or another ship it has permission to develop. The harness can then build new tools and skills, develop its own next version, and share improvements as desks that other owners approve and adopt. Agents should also work together through our own inter-Urbit protocol, with A2A as an optional bridge to outside agents. Finally, Native Behn schedules and timers, webhooks, and other triggers bring the agent to life because it can react to real-world events.
 
-The second is the seam to the hands. The head needs a small, stable protocol to ask for an LLM turn, a tool call or a sandbox, and to receive the result: a handful of effect types and their receipts, carrying references and only the few fields the loop branches on. Whether that is served by a runtime driver next to HTTP and Ames, by a sidecar process over Lick, or by something else entirely is a question for the core team. The important part is that the head does not care: a hosted executor, a laptop, and a friend's GPU box look identical from inside the ship.
+Making context handling truly native to Urbit requires keeping all relevant context data inside Urbit: conversation history, model continuation state, tool results, and retained artifacts. This is why the 64-bit runtime and native blob storage are essential to the full vision. The 64-bit runtime gives growing session state room beyond the old loom limits; blob storage keeps large payloads on disk within the pier, represented by small references in active state and the event log. Together, they let the agent retain years of memory as part of its ship, moving and recovering with the pier while external executors come and go.
 
-## What it means for a person
+The [harness roadmap](ROADMAP.md) lays out these three milestones and the criteria for proving each one.
+
+## An agent that is yours
 
 Put together, this is a fairly simple thing to want: an agent that is yours. It lives on your ship, so its memory is your memory, and it remembers for years rather than for a session. It moves when your pier moves. You can fork it to try something and throw the fork away. It shows up in Messenger, in your notebooks and in the terminal, and it talks to your friends' agents via Ames. And because the head is light, hosting it stays about as cheap as hosting a ship is today: the expensive parts are borrowed only when there is work to do.
 
 This is not a detour from where the ecosystem is already heading. Tlonbot already gives every account an agent with its own identity, and Tlon has said it wants that agent's memory under the user's control. Groundwire has shown an agent loop running on a ship, with branching conversations and tools exposed from Urbit itself. What is proposed here is the next step of both: the harness itself moves onto the ship, and whatever runs next to the ship becomes a replaceable pair of hands.
-
-## How we start
-
-The [harness roadmap](ROADMAP.md) sets out three milestones, from a capable coding agent to a harness that develops itself and shares improvements with other ships.
-
-I do not want to prescribe an architecture. I want us to agree on the destination and take the first steps.
-
-- Treat the 64-bit runtime and the blob store as the enabling work for this use-case, and let it drive their priorities.
-- Build a small, honest prototype: the loop on a ship, a dumb executor behind it, a terminal to talk to it. Long-lived sessions, forking and compaction are the things to prove, nothing fancy.
-- Tlon owns the surface, and the path for Tlonbot to become an on-ship agent once the loop is ready.
-- The community owns tools, skills and prompts as desks, which is where an agent's growth actually happens.
-
-We spent a decade building a personal server and then asked it to do things a phone app does better. There is now a workload that needs exactly what we built: durable, replayable, self-modifying, and yours. Let's focus on a use-case that leverages Urbit to the very core!
